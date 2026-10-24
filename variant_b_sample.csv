@@ -1,0 +1,5 @@
+event_id,time,device_known,location_change,mfa_result,account_change,analyst_note
+B-211,11:02,yes,no,passed,none,Usual device and location
+B-212,11:06,no,yes,failed,recovery_page_opened,MFA failed; recovery page viewed
+B-213,11:08,no,yes,passed,recovery_email_change_requested,Request observed; completion not confirmed
+B-214,11:16,yes,no,passed,none,Later familiar sign-in; user confirmation unavailable

@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Shadow Triage: Mock SOC Console</title>
+<style>
+:root{--bg:#f6f7f9;--fg:#111827;--mut:#5b6472;--card:#fff;--bd:#d9dde3;--hi:#c0262d;--md:#b7791f;--lo:#2f855a;--ac:#2557d6;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0b1220;--fg:#e6e9ef;--mut:#9aa4b2;--card:#131c2e;--bd:#26324a;--hi:#ff6b6b;--md:#f6c453;--lo:#5fd49a;--ac:#7aa2ff}}
+:root[data-theme="dark"]{--bg:#0b1220;--fg:#e6e9ef;--mut:#9aa4b2;--card:#131c2e;--bd:#26324a;--hi:#ff6b6b;--md:#f6c453;--lo:#5fd49a;--ac:#7aa2ff}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;padding:16px}
+main{max-width:980px;margin:0 auto}h1{font-size:22px;margin:0}h2{font-size:15px;margin:0 0 8px;text-transform:uppercase;letter-spacing:.06em;color:var(--mut)}
+.sub{color:var(--mut);margin:2px 0 14px}.card{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:14px;margin:12px 0}
+.tabs{display:flex;gap:8px;flex-wrap:wrap}button{font:inherit;border:1px solid var(--bd);background:var(--card);color:var(--fg);padding:8px 12px;border-radius:8px;cursor:pointer}
+button.on{background:var(--ac);color:#fff;border-color:var(--ac)}
+.verdict{display:flex;gap:16px;align-items:center;flex-wrap:wrap}.lvl{font-size:28px;font-weight:800}
+.High{color:var(--hi)}.Medium{color:var(--md)}.Low{color:var(--lo)}
+.wrap{overflow-x:auto}table{border-collapse:collapse;width:100%;min-width:640px}th,td{text-align:left;padding:8px;border-bottom:1px solid var(--bd);vertical-align:top;font-size:14px}
+.bar{height:8px;border-radius:4px;background:var(--bd);min-width:70px}.bar i{display:block;height:100%;border-radius:4px;background:currentColor}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px}ul{margin:0;padding-left:18px}li{margin:3px 0}
+.rung{display:inline-block;font-size:12px;border:1px solid var(--bd);border-radius:20px;padding:1px 8px;color:var(--mut);margin-right:4px}
+textarea{width:100%;min-height:110px;font:12px monospace;background:var(--bg);color:var(--fg);border:1px solid var(--bd);border-radius:8px;padding:8px}
+.pass{color:var(--lo)}.fail{color:var(--hi);font-weight:700}small,.mut{color:var(--mut)}
+
+input[type=text]{font:inherit;background:var(--bg);color:var(--fg);border:1px solid var(--bd);border-radius:8px;padding:8px;width:100%;margin:4px 0}.off{opacity:.45}
+</style></head><body><main>
+<h1>Shadow Triage <small>mock SOC console</small></h1>
+<p class="sub">Raw events go in. The engine extracts features, applies weighted rules and explains the result. Untick an event to see the verdict change. Outputs are signals, not proof.</p>
+<div class="tabs" id="tabs"></div>
+<div id="custom" class="card" hidden><h2>Paste events (JSON array or CSV)</h2>
+<textarea id="csv" spellcheck="false"></textarea><p><button id="run">Analyze</button> <small>CSV columns: event_id, time, device_known, location_change, mfa_result, account_change, analyst_note. JSON events use type: email, signin, mfa, mailrule or telemetry.</small></p></div>
+<div id="out"></div>
+<div class="card"><h2>Domain lookalike checker (screenshot clue)</h2>
+<input type="text" id="dom" placeholder="Domain from the screenshot, e.g. micr0soft.com (typed text only; never open the link)">
+<input type="text" id="trust" placeholder="Trusted domains, comma separated (optional)">
+<p><button id="chk">Check domain</button></p><div id="domout"></div></div>
+<div class="card"><h2>Self-tests</h2><div id="tests"></div></div>
+<p class="mut">Synthetic workshop data only. The tool never opens links, contacts accounts, sends messages or scans systems.</p>
+</main>
+<script src="detector.js"></script>
+<script>
+const $=s=>document.querySelector(s),esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+let key='northstar',EV=[],off=new Set();
+const li=a=>a.length?'<ul>'+a.map(x=>`<li>${esc(x)}</li>`).join('')+'</ul>':'<small>None identified</small>';
+function render(title){
+ const act=EV.filter(e=>!off.has(e.id)),A=analyze(act),by={};A.rows.forEach(r=>by[r.e.id]=r);
+ const firstId=(A.rows.find(r=>r.score>=25)||{e:{}}).e.id;
+ $('#out').innerHTML=`<div class="card"><h2>${esc(title)}</h2><div class="verdict"><div><div class="lvl ${A.level}">${A.level} risk</div><small>score ${A.score}/100</small></div>
+ <div><b>Confidence ≈ ${A.conf}%</b> in this risk level.<br><small>This is confidence that the account is targeted or compromised, not that data was stolen or who is responsible.</small></div></div>
+ <p><b>Why:</b> ${A.cats.length?`signals in ${A.cats.length} independent categories (${A.cats.join(', ')}).`:'no risk signals matched.'}${A.chains.length?' Matched sequence: <b>'+esc(A.chains.map(c=>c.n).join('; '))+'</b>.':''}</p></div>
+ <div class="card"><h2>Events (untick to exclude)</h2><div class="wrap"><table><tr><th></th><th>Time</th><th>Event</th><th>Risk</th><th>Why flagged</th><th>Possible false positive</th></tr>
+ ${[...EV].sort((a,b)=>m(a.time)-m(b.time)).map(e=>{const r=by[e.id],hs=r?r.hits.filter(h=>h.w>0):[];return`<tr class="${r?'':'off'}"><td><input type="checkbox" data-id="${esc(e.id)}" ${r?'checked':''}></td><td>${esc(e.time)}<br><small>${esc(e.id)}</small></td>
+ <td>${esc(describe(e))}${e.id===firstId?'<br><span class="rung">first anomaly</span>':''}${r&&r.f.la_why?'<br><small>Domain: '+esc(r.f.la_why)+'</small>':''}</td>
+ <td class="${r?L(r.score):''}">${r?`<b>${L(r.score)}</b> ${r.score}<div class="bar"><i style="width:${r.score}%"></i></div>`:'excluded'}</td>
+ <td>${hs.length?'<ul>'+hs.map(h=>`<li>${esc(h.n)} (+${h.w})</li>`).join('')+'</ul>':'<small>No risk rule matched</small>'}</td>
+ <td>${hs.length?'<ul>'+hs.map(h=>`<li>${esc(h.fp)}</li>`).join('')+'</ul>':'<small>n/a</small>'}</td></tr>`}).join('')}</table></div></div>
+ <div class="grid"><div class="card"><h2><span class="rung">1</span>Observed facts</h2>${li(A.facts)}</div>
+ <div class="card"><h2><span class="rung">4</span>Hypotheses (unproven)</h2>${li(A.hyp)}</div>
+ <div class="card"><h2><span class="rung">5</span>Missing evidence</h2>${li(A.missing)}</div>
+ <div class="card"><h2>Safe containment (analyst actions)</h2>${li(A.act)}</div>
+ <div class="card"><h2>Limitations</h2>${li(A.lim)}</div></div>`;
+ document.querySelectorAll('#out input[type=checkbox]').forEach(c=>c.onchange=()=>{c.checked?off.delete(c.dataset.id):off.add(c.dataset.id);render(title)});
+}
+function show(k){key=k;off=new Set();
+ document.querySelectorAll('#tabs button').forEach(b=>b.classList.toggle('on',b.dataset.k===k));$('#custom').hidden=k!=='custom';
+ if(k==='custom')return run();EV=SC[k].events;render(SC[k].title)}
+function run(){try{EV=parseInput($('#csv').value);if(!EV.length)throw 0}catch(e){$('#out').innerHTML='<div class="card fail">No valid events. Check the format (HH:MM times, valid JSON or CSV).</div>';return}off=new Set();render('Custom input ('+EV.length+' events)')}
+$('#csv').value=SAMPLE;$('#run').onclick=run;
+$('#chk').onclick=()=>{const r=lookalike($('#dom').value,CTX,$('#trust').value.split(',').map(s=>s.trim()).filter(Boolean));$('#domout').innerHTML=`<b class="${r.hit?'High':'Low'}">${r.hit?'Lookalike signal':'No lookalike signal'}</b>: ${esc(r.why)}<br><small>Verify the sender and domain through a trusted channel. Do not open the link or enter credentials.</small>`};
+[['northstar','Northstar case'],['variantB','Variant B telemetry'],['benign','Negative control'],['custom','Your own input']].forEach(([k,n])=>{const b=document.createElement('button');b.dataset.k=k;b.textContent=n;b.onclick=()=>show(k);$('#tabs').appendChild(b)});
+const T=selfTests();$('#tests').innerHTML=T.map(([n,ok])=>`<div class="${ok?'pass':'fail'}">${ok?'PASS':'FAIL'}: ${esc(n)}</div>`).join('')+`<p><b>${T.filter(t=>t[1]).length}/${T.length} passed</b></p>`;
+show('northstar');
+</script></body></html>
