@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Shadow Trace: Attack Timeline Reconstruction</title>
+<style>
+:root{--bg:#f6f7f9;--fg:#111827;--mut:#5b6472;--card:#fff;--bd:#d9dde3;--hi:#c0262d;--md:#b7791f;--lo:#2f855a;--ac:#2557d6;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#0b1220;--fg:#e6e9ef;--mut:#9aa4b2;--card:#131c2e;--bd:#26324a;--hi:#ff6b6b;--md:#f6c453;--lo:#5fd49a;--ac:#7aa2ff}}
+:root[data-theme="dark"]{--bg:#0b1220;--fg:#e6e9ef;--mut:#9aa4b2;--card:#131c2e;--bd:#26324a;--hi:#ff6b6b;--md:#f6c453;--lo:#5fd49a;--ac:#7aa2ff}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;padding:16px}
+main{max-width:1020px;margin:0 auto}h1{font-size:22px;margin:0}h2{font-size:14px;margin:0 0 8px;text-transform:uppercase;letter-spacing:.06em;color:var(--mut)}
+.sub{color:var(--mut);margin:2px 0 14px}.card{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:14px;margin:12px 0}
+.tabs{display:flex;gap:8px;flex-wrap:wrap}button{font:inherit;border:1px solid var(--bd);background:var(--card);color:var(--fg);padding:8px 12px;border-radius:8px;cursor:pointer}
+button.on{background:var(--ac);color:#fff;border-color:var(--ac)}
+.lvl{font-size:26px;font-weight:800}.High{color:var(--hi)}.Medium{color:var(--md)}.Low{color:var(--lo)}
+.wrap{overflow-x:auto}table{border-collapse:collapse;width:100%;min-width:700px}th,td{text-align:left;padding:8px;border-bottom:1px solid var(--bd);vertical-align:top;font-size:14px}
+.bar{height:8px;border-radius:4px;background:var(--bd);min-width:60px}.bar i{display:block;height:100%;border-radius:4px;background:currentColor}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px}ul{margin:0;padding-left:18px}li{margin:3px 0}
+.chip{display:inline-block;font-size:12px;border:1px solid var(--bd);border-radius:20px;padding:1px 8px;color:var(--mut);margin:0 4px 2px 0}
+.fact{border-color:var(--lo);color:var(--lo)}.hyp{border-color:var(--md);color:var(--md)}.esc{border-color:var(--hi);color:var(--hi)}
+.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}.metrics div{border:1px solid var(--bd);border-radius:8px;padding:8px}.metrics b{display:block;font-size:20px}
+.path{display:flex;flex-wrap:wrap;gap:6px;align-items:center}.path span.n{border:1px solid var(--bd);border-radius:8px;padding:4px 8px}.path small{color:var(--mut)}
+textarea{width:100%;min-height:110px;font:12px monospace;background:var(--bg);color:var(--fg);border:1px solid var(--bd);border-radius:8px;padding:8px}
+.pass{color:var(--lo)}.fail{color:var(--hi);font-weight:700}small,.mut{color:var(--mut)}.off{opacity:.45}
+</style></head><body><main>
+<h1>Shadow Trace <small>attack timeline reconstruction</small></h1>
+<p class="sub">Orders events, separates facts from hypotheses, links stages, ranks indicators and prioritizes response. Event order alone does not prove causation.</p>
+<div class="tabs" id="tabs"></div>
+<div id="custom" class="card" hidden><h2>Paste events (CSV or TSV)</h2>
+<textarea id="csv" spellcheck="false"></textarea><p><button id="run">Analyze</button> <small>Columns: event_id, time (HH:MM), event, source, status, evidence_gap</small></p></div>
+<div id="out"></div>
+<div class="card"><h2>Self-tests</h2><div id="tests"></div></div>
+<p class="mut">Fictional workshop evidence only. Nothing here contacts or scans any system.</p>
+</main>
+<script>
+/* ===== ENGINE ===== */
+const m=t=>{const[a,b]=t.split(':').map(Number);return a*60+b};
+const NUM={one:1,two:2,three:3,four:4,five:5,six:6,seven:7,eight:8,nine:9,ten:10};
+const uniq=a=>[...new Set(a.filter(Boolean))];
+const TAGS=[
+{k:'ambiguous',re:/usual office network.*fail|fail.*usual office/i,w:()=>5,label:'Failed sign-in from usual network',why:'Weak and ambiguous signal',fp:'Could be a lockout after changes, or noise. Do not over-read it.',gap:'Why the sign-in failed (lockout, session reset or noise).'},
+{k:'containment',re:/disables?|blocks? sign-in|revoke/i,w:()=>0,label:'Containment action',kind:'response'},
+{k:'remediation',re:/rule removed|removed.*rule/i,w:()=>0,label:'Remediation action',kind:'response'},
+{k:'detection',re:/reports?\b.*(email|phish)/i,w:()=>0,label:'User report',kind:'response'},
+{k:'hypothesis',re:/exfiltration/i,w:()=>0,label:'Analyst hypothesis',kind:'hyp'},
+{k:'delivery',re:/payroll-themed|phish|\blure\b/i,w:()=>30,label:'Lure delivered',why:'Credential-themed message delivered to the user',fp:'Real vendors send payroll notices; verify the sender via a trusted channel.',gap:'Whether the user opened or clicked, plus full headers and link target.'},
+{k:'mfa',re:/mfa/i,w:t=>/denies|did not|unrequested/i.test(t)?40:25,label:'MFA event',why:'Second factor was passed or approved in an unusual way',fp:'The user may have forgotten approving it; the denial is a statement, not verified.',gap:'MFA push log: source IP, timing and whether number-matching was on.'},
+{k:'persistence',re:/forwarding rule/i,w:()=>50,label:'External forwarding rule',why:'Mailbox rule sends mail outside the organization',fp:'Some staff forward to personal addresses legitimately. Confirm with the user.',gap:'Rule destination, who created it from which session, and which mail it forwarded.'},
+{k:'transfer',re:/outbound|egress|data transfer/i,w:()=>40,label:'Outbound transfer',why:'Data left the environment',fp:'May be a legitimate transfer; check destination and volume.',gap:''},
+{k:'collection',re:/preview|download|document/i,w:()=>30,label:'File access',why:'Documents were accessed under the session',fp:'Previews are views, not copies. Read access alone does not prove data left the environment.',gap:'Which documents were previewed, their sensitivity, and any download or transfer record.'},
+{k:'recon',re:/recovery settings viewed/i,w:()=>15,label:'Recovery settings viewed',why:'Account recovery options inspected',fp:'A genuine user may check these.',gap:'Whether any recovery setting was changed.'},
+{k:'access',re:/sign-in|new device|new browser/i,w:()=>25,label:'Unfamiliar sign-in',why:'Sign-in from an unfamiliar IP, device or browser',fp:'Could be a new laptop or travel; weak alone.',gap:'IP geolocation, ASN, reputation, and user confirmation.'}];
+const STAGE={delivery:'Lure delivered',access:'Unfamiliar sign-in',mfa:'MFA passed or approved',persistence:'Forwarding rule created',recon:'Recovery settings viewed',collection:'Documents previewed',transfer:'Outbound transfer'};
+function classify(e){const t=e.event||'';const tag=TAGS.find(x=>x.re.test(t))||{k:'other',w:()=>0,label:'Unclassified',kind:'context'};
+ const hyp=(e.status||'observed')!=='observed'||tag.kind==='hyp';return{tag,w:hyp?0:tag.w(t),hyp}}
+function count(t){const r=/(\w+)\s+(?:document\s+)?previews?/i.exec(t);if(!r)return null;const v=r[1].toLowerCase();return NUM[v]||(/^\d+$/.test(v)?+v:null)}
+function exfil(rows){
+ const ev=rows.filter(r=>!r.hyp).map(r=>r.e.event);
+ const dl=ev.some(t=>/download/i.test(t)&&!/no (confirmed )?download|without download/i.test(t));
+ const out=ev.some(t=>/outbound|egress|data transfer/i.test(t)&&!/no .*(outbound|transfer)/i.test(t));
+ const st=dl&&out?'Supported':dl||out?'Partially supported':'Not established';
+ return{status:st,dl,out,
+  text:st==='Not established'?'Document access is observed, but there is no download or outbound-transfer evidence, so exfiltration cannot be claimed.':st==='Partially supported'?'One of download or outbound transfer is evidenced; the other is missing. Treat as probable, not proven.':'Both download and outbound transfer are evidenced. Verify scope and content before final reporting.',
+  raise:['File-portal download log with object IDs, byte counts and the session ID','Proxy, firewall or egress logs showing a transfer from the session IP or host after the access','Mail trace showing messages delivered to the forwarding destination during the rule window','DLP or sharing-link alerts tied to the previewed documents','Identification and sensitivity classification of the previewed documents'],
+  lower:['The account owner confirms the previews were their own activity','File-portal logs show only views, with no copy, export or share events','Egress logs show no transfer for the session and time window']};
+}
+function analyze(events){
+ const ev=[...events].sort((a,b)=>m(a.time)-m(b.time));
+ const rows=ev.map((e,i)=>({e,...classify(e),delta:i?m(e.time)-m(ev[i-1].time):0}));
+ const T={};rows.forEach(r=>{if(!T[r.tag.k])T[r.tag.k]=r});
+ const ind=rows.filter(r=>r.w>0),stagesIn=rows.filter(r=>STAGE[r.tag.k]&&!r.hyp);
+ const first=ind.find(r=>r.w>=15)||null;
+ const esc=rows.filter(r=>['mfa','persistence','collection','transfer'].includes(r.tag.k)&&!r.hyp);
+ const score=Math.min(100,uniq(ind.map(r=>r.tag.k)).reduce((a,k)=>a+Math.max(...ind.filter(r=>r.tag.k===k).map(r=>r.w)),0));
+ const level=score>=70?'High':score>=40?'Medium':'Low';
+ const dur=(a,b)=>a&&b?m(b.e.time)-m(a.e.time):null;
+ const X=exfil(rows),prev=T.collection?count(T.collection.e.event):null;
+ const win=T.persistence&&T.remediation?`${T.persistence.e.time} to ${T.remediation.e.time}`:'';
+ const metrics={toContain:dur(T.access||T.delivery,T.containment),reportToContain:dur(T.detection,T.containment),ruleWindow:dur(T.persistence,T.remediation),previews:prev,
+  previewInWindow:!!(T.collection&&T.persistence&&T.remediation&&m(T.collection.e.time)>=m(T.persistence.e.time)&&m(T.collection.e.time)<=m(T.remediation.e.time))};
+ const A=[],add=(p,text,st,at)=>A.push({p,text,st:st||'todo',at});
+ if(T.access||T.mfa)T.containment?add(1,'Sessions disabled and sign-in blocked. Keep the block until identity is verified through a trusted channel.','done',T.containment.e.time):add(1,'Revoke all active sessions and refresh tokens and block sign-in until identity is verified through a trusted channel.');
+ if(T.persistence){T.remediation?add(1,'Forwarding rule removed. Still audit all other mailbox rules, delegates and OAuth grants.','done',T.remediation.e.time):add(1,'Remove the external forwarding rule and audit other mailbox rules, delegates and OAuth grants.');
+  add(1,`Run a mail trace for messages sent to the external destination${win?' during '+win:''}. This decides whether mail content left.`)}
+ if(T.collection)add(2,'Identify exactly which documents were previewed and how sensitive they are; pull file-portal logs for downloads, shares and link creation by this session.');
+ if(T.collection||T.persistence)add(2,'Collect egress, proxy and DLP logs for the session IP and time window before any exfiltration claim.');
+ if(T.mfa)add(2,'Reset the password through a trusted channel, review the MFA push log and enable number-matching.');
+ if(T.recon)add(2,'Hold any recovery-setting changes until the owner verifies.');
+ if(T.delivery)add(2,'Quarantine the lure, search other mailboxes for it and block the sender domain. Do not open the link.');
+ if(rows.length)add(3,'Preserve logs and the original message as evidence; keep the incident open until the evidence gaps are closed.');
+ if(T.delivery)add(3,'Brief the user and run phishing-awareness follow-up.');
+ A.sort((a,b)=>a.p-b.p||(a.st==='done')-(b.st==='done'));
+ const present=uniq(rows.filter(r=>r.tag.kind!=='response').map(r=>r.tag.k));
+ return{rows,T,first,esc,score,level,metrics,exfil:X,plan:A,
+  path:stagesIn.map(r=>r),
+  facts:rows.filter(r=>!r.hyp).map(r=>`${r.e.time} ${r.e.event}`),
+  hyp:uniq([...rows.filter(r=>r.hyp).map(r=>`${r.e.time} ${r.e.event} (${r.e.status||'hypothesis'})`),
+   T.persistence&&T.access?'The forwarding rule was created by the same actor who signed in at '+T.access.e.time+' (temporal proximity only)':'',
+   T.mfa&&T.mfa.e.event&&/denies/i.test(T.mfa.e.event)?'The MFA approval was not made by the user (this rests on the user’s statement)':'',
+   T.delivery&&T.access?'The lure led to credential disclosure (the click or submission is not in the evidence)':'',
+   T.collection?'The previewed documents were viewed by the same actor, not the legitimate user':'']),
+  gaps:uniq([...rows.map(r=>r.e.evidence_gap||r.e.gap),...present.map(k=>(TAGS.find(t=>t.k===k)||{}).gap)]),
+  ind:[...ind].sort((a,b)=>b.w-a.w)};
+}
+const SC={
+northstar:{title:'Northstar Labs follow-up (Round 2 case file)',events:[
+{id:'E1',time:'08:41',event:'Suspicious payroll-themed email delivered to Mira',source:'case file',status:'observed'},
+{id:'E2',time:'08:44',event:'Successful sign-in from an unfamiliar IP and new browser',source:'case file',status:'observed'},
+{id:'E3',time:'08:45',event:'MFA push approved; user denies initiating it',source:'case file',status:'observed'},
+{id:'E4',time:'08:47',event:'External mailbox forwarding rule created',source:'case file',status:'observed'},
+{id:'E5',time:'08:49',event:'File portal records three document previews under Mira’s session',source:'case file',status:'observed',evidence_gap:'No confirmed download event is present'},
+{id:'E6',time:'08:51',event:'Sign-in attempt from the usual office network fails',source:'case file',status:'observed'},
+{id:'E7',time:'08:54',event:'User reports the email to IT',source:'case file',status:'observed'},
+{id:'E8',time:'08:56',event:'Security team disables active sessions and temporarily blocks sign-in pending identity verification',source:'case file',status:'observed'},
+{id:'E9',time:'09:02',event:'Mailbox rule removed; investigation remains open',source:'case file',status:'observed'}]},
+variantA:{title:'Variant A: File portal timeline',events:[
+{id:'TA-201',time:'10:02',event:'Sign-in from new device',source:'identity_log',status:'observed',evidence_gap:'User confirmation unavailable'},
+{id:'TA-202',time:'10:05',event:'MFA passed after earlier failure',source:'identity_log',status:'observed',evidence_gap:'Authentication context incomplete'},
+{id:'TA-203',time:'10:12',event:'Recovery settings viewed',source:'account_audit',status:'observed',evidence_gap:'No change confirmed'},
+{id:'TA-204',time:'10:18',event:'Several file previews',source:'file_portal_log',status:'observed',evidence_gap:'No download or outbound-transfer record'},
+{id:'TA-205',time:'10:25',event:'Possible data exfiltration',source:'analyst_hypothesis',status:'unconfirmed',evidence_gap:'Need download/network evidence'}]}};
+const SAMPLE=`event_id,time,event,source,status,evidence_gap
+TA-201,10:02,Sign-in from new device,identity_log,observed,User confirmation unavailable
+TA-202,10:05,MFA passed after earlier failure,identity_log,observed,Authentication context incomplete
+TA-203,10:12,Recovery settings viewed,account_audit,observed,No change confirmed
+TA-204,10:18,Several file previews,file_portal_log,observed,No download or outbound-transfer record
+TA-205,10:25,Possible data exfiltration,analyst_hypothesis,unconfirmed,Need download/network evidence`;
+function parseCsv(txt){
+ txt=txt.replace(/^\uFEFF/,'').trim();const sep=txt.split('\n')[0].includes('\t')?'\t':',';const rows=[];let row=[],f='',q=false;
+ for(let i=0;i<=txt.length;i++){const c=txt[i];
+  if(q){if(c==='"'&&txt[i+1]==='"'){f+='"';i++}else if(c==='"')q=false;else f+=c}
+  else if(c==='"')q=true;else if(c===sep){row.push(f);f=''}else if(c==='\n'||c==='\r'||c===undefined){if(c==='\r'&&txt[i+1]==='\n')i++;row.push(f);f='';if(row.some(x=>x.trim()))rows.push(row);row=[]}else f+=c}
+ const h=rows[0].map(x=>x.trim().toLowerCase());const ix=n=>h.indexOf(n);
+ return rows.slice(1).map(r=>({id:r[ix('event_id')]||'',time:(r[ix('time')]||'').trim(),event:(r[ix('event')]||'').trim(),source:(r[ix('source')]||'').trim(),status:(r[ix('status')]||'observed').trim(),evidence_gap:(r[ix('evidence_gap')]||'').trim()})).filter(e=>/^\d{1,2}:\d{2}$/.test(e.time));
+}
+function selfTests(){
+ const N=analyze(SC.northstar.events),V=analyze(SC.variantA.events),keys=a=>a.path.map(r=>r.tag.k).join('>');
+ const plus=analyze([...SC.northstar.events,{time:'09:10',event:'File portal logs a download of 40 documents',status:'observed'},{time:'09:11',event:'Proxy logs show outbound transfer of 2 GB to an external host',status:'observed'}]);
+ const noPrev=analyze(SC.northstar.events.filter(e=>e.id!=='E5'));
+ const shuffled=analyze([...SC.northstar.events].reverse());
+ const par=parseCsv('\uFEFF"event_id","time","event","source","status","evidence_gap"\r\n"TA-1","10:02","Sign-in from new device","identity_log","observed","User confirmation unavailable"');
+ return[
+ ['Northstar: 9 events ordered chronologically even when input is reversed',N.rows.length===9&&shuffled.rows.map(r=>r.e.time).join()===N.rows.map(r=>r.e.time).join()],
+ ['Northstar: first anomaly is the 08:41 lure',N.first&&N.first.e.time==='08:41'],
+ ['Northstar: attack path is lure, sign-in, MFA, forwarding rule, document previews in order',keys(N)==='delivery>access>mfa>persistence>collection'],
+ ['Northstar: exfiltration is Not established (previews only, no download or transfer evidence)',N.exfil.status==='Not established'&&!N.exfil.dl&&!N.exfil.out],
+ ['Northstar: three previews counted, falling inside the forwarding-rule window',N.metrics.previews===3&&N.metrics.previewInWindow],
+ ['Northstar: timings computed (12 min to containment, 2 min report to containment, 15 min rule window)',N.metrics.toContain===12&&N.metrics.reportToContain===2&&N.metrics.ruleWindow===15],
+ ['Northstar: containment and rule removal recognized as already done; mail trace still open',N.plan.filter(a=>a.st==='done').length===2&&N.plan.some(a=>/mail trace/i.test(a.text)&&a.st==='todo')],
+ ['Northstar: ambiguous 08:51 failure stays weak; response events carry no risk weight',N.rows.find(r=>r.e.time==='08:51').w===5&&N.rows.filter(r=>r.tag.kind==='response').every(r=>r.w===0)],
+ ['Northstar: strongest indicator is the forwarding rule, then the unrequested MFA',N.ind[0].tag.k==='persistence'&&N.ind[1].tag.k==='mfa'],
+ ['Variant A: hypothesis event TA-205 is not counted as evidence',V.rows.find(r=>r.e.id==='TA-205').hyp&&V.rows.find(r=>r.e.id==='TA-205').w===0],
+ ['Variant A: path is sign-in, MFA, recovery view, previews; exfiltration Not established',keys(V)==='access>mfa>recon>collection'&&V.exfil.status==='Not established'],
+ ['Variant A: evidence gaps from the CSV are carried into the report',V.gaps.includes('No download or outbound-transfer record')&&V.gaps.includes('Need download/network evidence')],
+ ['Ablation: removing the previews removes the file-access action and the preview count',!noPrev.T.collection&&!noPrev.plan.some(a=>/previewed/i.test(a.text))&&noPrev.metrics.previews===null],
+ ['Positive control: adding download plus outbound transfer evidence changes the verdict to Supported',plus.exfil.status==='Supported'],
+ ['Parser: quoted CSV with BOM parses; sample CSV gives 5 events',par.length===1&&par[0].id==='TA-1'&&parseCsv(SAMPLE).length===5],
+ ['No attribution or confirmed-theft claim in generated text',!/attacker identified|data (was )?stolen|confirmed exfiltration/i.test(JSON.stringify([N.hyp,N.exfil.text,N.plan]))]
+ ].map(([n,ok])=>[n,!!ok]);
+}
+/* ===== UI ===== */
+if(typeof document!=='undefined'){
+const $=s=>document.querySelector(s),esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+let EV=[],off=new Set();
+const li=a=>a.length?'<ul>'+a.map(x=>`<li>${esc(x)}</li>`).join('')+'</ul>':'<small>None identified</small>';
+const d=n=>n===null||n===undefined?'n/a':n+' min';
+function render(title){
+ const act=EV.filter(e=>!off.has(e.id)),A=analyze(act),M=A.metrics,X=A.exfil,by=new Map(A.rows.map(r=>[r.e.id,r]));
+ const xc=X.status==='Supported'?'High':X.status==='Partially supported'?'Medium':'Low';
+ const sorted=[...EV].sort((a,b)=>m(a.time)-m(b.time));
+ $('#out').innerHTML=`<div class="card"><h2>${esc(title)}</h2><div class="metrics">
+ <div><small>Account compromise</small><b class="${A.level}">${A.level}</b><small>score ${A.score}/100</small></div>
+ <div><small>Data exfiltration</small><b class="${xc}">${X.status}</b><small>not claimed without evidence</small></div>
+ <div><small>Sign-in to containment</small><b>${d(M.toContain)}</b></div><div><small>Report to containment</small><b>${d(M.reportToContain)}</b></div>
+ <div><small>Forwarding rule active</small><b>${d(M.ruleWindow)}</b></div><div><small>Document previews</small><b>${M.previews===null?'n/a':M.previews}</b>${M.previewInWindow?'<small>inside the rule window</small>':''}</div></div>
+ <p><b>Conclusion:</b> ${esc(X.text)}</p></div>
+ <div class="card"><h2>Likely attack path (hypothesis built from ordered observed events)</h2><div class="path">${A.path.map((r,i)=>`${i?`<small>+${r.delta} min →</small>`:''}<span class="n">${esc(r.e.time)} ${esc(STAGE[r.tag.k])}</span>`).join('')||'<small>No attack stages detected</small>'}</div>
+ <p><small>Links show elapsed time only. Temporal order suggests a sequence; it does not prove one actor or causation.</small></p></div>
+ <div class="card"><h2>Reconstructed timeline (untick to exclude an event)</h2><div class="wrap"><table><caption class="mut" style="text-align:left">Chronological order, with classification and caveats</caption><tr><th></th><th>Time</th><th>Event</th><th>Type</th><th>Stage and weight</th><th>Caveat or gap</th></tr>
+ ${sorted.map(e=>{const r=by.get(e.id);if(!r)return`<tr class="off"><td><input type="checkbox" data-id="${esc(e.id)}" aria-label="Include ${esc(e.id)}"></td><td>${esc(e.time)}</td><td>${esc(e.event)}</td><td colspan="3">excluded</td></tr>`;
+ const isF=A.first&&A.first.e.id===e.id,isE=A.esc.includes(r);
+ return`<tr><td><input type="checkbox" data-id="${esc(e.id)}" checked aria-label="Include ${esc(e.id)}"></td><td>${esc(e.time)}<br><small>${esc(e.id)}</small></td><td>${esc(e.event)}<br><small>${esc(e.source||'')}</small></td>
+ <td><span class="chip ${r.hyp?'hyp':'fact'}">${r.hyp?'Hypothesis':'Observed fact'}</span>${isF?'<span class="chip">first anomaly</span>':''}${isE?'<span class="chip esc">escalation</span>':''}</td>
+ <td>${esc(r.tag.label)}${r.w?`<div class="bar" style="color:var(--${r.w>=40?'hi':r.w>=25?'md':'lo'})"><i style="width:${Math.min(100,r.w*2)}%"></i></div><small>+${r.w}</small>`:''}</td>
+ <td><small>${esc(e.evidence_gap||e.gap||r.tag.fp||'')}</small></td></tr>`}).join('')}</table></div></div>
+ <div class="grid"><div class="card"><h2>Strongest indicators</h2>${li(A.ind.slice(0,4).map(r=>`${r.e.time} ${r.tag.label} (+${r.w}): ${r.tag.why}`))}</div>
+ <div class="card"><h2>Prioritized response</h2><ul>${A.plan.map(a=>`<li><b>P${a.p}</b> ${a.st==='done'?`<span class="chip fact">done ${esc(a.at)}</span>`:'<span class="chip hyp">to do</span>'} ${esc(a.text)}</li>`).join('')}</ul></div>
+ <div class="card"><h2>Observed facts</h2>${li(A.facts)}</div><div class="card"><h2>Hypotheses and assumptions (unproven)</h2>${li(A.hyp)}</div>
+ <div class="card"><h2>Evidence gaps</h2>${li(A.gaps)}</div>
+ <div class="card"><h2>Before claiming exfiltration, we need</h2>${li(X.raise)}<h2 style="margin-top:10px">Evidence that would lower the concern</h2>${li(X.lower)}</div></div>`;
+ document.querySelectorAll('#out input[type=checkbox]').forEach(c=>c.onchange=()=>{c.checked?off.delete(c.dataset.id):off.add(c.dataset.id);render(title)});
+}
+function show(k){off=new Set();document.querySelectorAll('#tabs button').forEach(b=>b.classList.toggle('on',b.dataset.k===k));$('#custom').hidden=k!=='custom';
+ if(k==='custom')return run();EV=SC[k].events;render(SC[k].title)}
+function run(){try{EV=parseCsv($('#csv').value).map((e,i)=>({...e,id:e.id||'E'+(i+1)}));if(!EV.length)throw 0}catch(e){$('#out').innerHTML='<div class="card fail">No valid events. Check the header row and HH:MM times.</div>';return}off=new Set();render('Custom input ('+EV.length+' events)')}
+$('#csv').value=SAMPLE;$('#run').onclick=run;
+[['northstar','Northstar case file'],['variantA','Variant A: file portal'],['custom','Your own input']].forEach(([k,n])=>{const b=document.createElement('button');b.dataset.k=k;b.textContent=n;b.onclick=()=>show(k);$('#tabs').appendChild(b)});
+const T=selfTests();$('#tests').innerHTML=T.map(([n,ok])=>`<div class="${ok?'pass':'fail'}">${ok?'PASS':'FAIL'}: ${esc(n)}</div>`).join('')+`<p><b>${T.filter(t=>t[1]).length}/${T.length} passed</b></p>`;
+show('northstar');}
+if(typeof module!=='undefined')module.exports={analyze,parseCsv,SC,selfTests};
+</script></body></html>

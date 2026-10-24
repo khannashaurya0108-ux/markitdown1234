@@ -26,6 +26,9 @@ It never returns a bare "safe" or "hacked". Every verdict is a risk level with r
 - **Your own input:** paste JSON events or Variant B style CSV.
 - **Domain checker:** type a domain from a screenshot clue to test it for lookalike patterns (text only, nothing is opened).
 
+## Round 2: Trace the Attack
+Open `trace.html` (live: `https://khannashaurya0108-ux.github.io/markitdown1234/trace.html`). It reconstructs an attack timeline from ordered events: it sorts them, classifies each into a stage, separates observed facts from hypotheses, marks the first anomaly and escalation points, computes timings (time to containment, forwarding-rule exposure window), ranks indicators, tracks which response actions are already done, and states exactly what evidence is still needed before claiming data exfiltration. Previews are treated as access, not theft: exfiltration stays "Not established" unless download and outbound-transfer evidence are present. It has 16 built-in self-tests (including an ablation and a positive control) and accepts pasted CSV.
+
 ## Run
 Open `index.html` in a browser, or serve the folder. Tests:
 ```
