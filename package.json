@@ -1,1 +1,1 @@
-{"name":"shadow-triage","version":"1.0.0","description":"Explainable sign-in and phishing triage with an evidence ladder","scripts":{"test":"node tests/run.js"},"license":"MIT"}
+{"name":"shadow-triage","version":"1.0.0","description":"Explainable sign-in and phishing triage with an evidence ladder","scripts":{"test":"node run.js"},"license":"MIT"}
